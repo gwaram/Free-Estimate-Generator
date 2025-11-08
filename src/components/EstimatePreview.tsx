@@ -7,7 +7,7 @@ import { toast } from 'sonner@2.0.3';
 import { projectId, publicAnonKey } from '../utils/supabase/info';
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import type { EstimateData, Item } from '../App';
+import type { EstimateData, Item } from '../types/estimate';
 
 interface EstimatePreviewProps {
   estimateData: EstimateData;
