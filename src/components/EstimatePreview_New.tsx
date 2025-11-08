@@ -1,74 +1,55 @@
-import React, { useRef, useCallback } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { DndProvider, useDrag, useDrop } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
-import { Trash2, Save, GripVertical, Copy } from 'lucide-react';
+import { Save, Copy, GripVertical, Trash2 } from 'lucide-react';
 import { toast } from 'sonner@2.0.3';
-import { projectId, publicAnonKey } from '../utils/supabase/info';
-import { DndProvider, useDrag, useDrop } from 'react-dnd';
-import { HTML5Backend } from 'react-dnd-html5-backend';
-import type { EstimateData, Item } from '../App';
+import { useEstimate } from '../state/EstimateContext';
+import { Item } from '../types/estimate';
+import { projectId } from '../utils/supabase/info';
 
 interface EstimatePreviewProps {
-  estimateData: EstimateData;
-  onRemoveItem: (index: number) => void;
-  onMoveItem: (dragIndex: number, hoverIndex: number) => void;
-  onUpdateItem: (index: number, updatedItem: Partial<Item>) => void;
   accessToken: string;
   user: any;
   currentEstimateId: string | null;
   onEstimateSaved: (estimateId: string) => void;
 }
 
-interface DragItem {
-  index: number;
+interface DragMeta {
   id: string;
-  type: string;
+  index: number;
+  type: 'PREVIEW_ITEM';
 }
 
-// Draggable Item Component
-function DraggableItem({ 
-  item, 
-  index, 
-  onRemoveItem, 
-  onUpdateItem,
-  moveItem 
-}: {
+const SPEC_OPTIONS = ['EA', 'SET', '개', '식', '품', 'm', 'kg', '시간', '일'];
+
+const EditableItemRow: React.FC<{
   item: Item;
   index: number;
-  onRemoveItem: (index: number) => void;
-  onUpdateItem: (index: number, updatedItem: Partial<Item>) => void;
-  moveItem: (dragIndex: number, hoverIndex: number) => void;
-}) {
-  const [{ isDragging }, drag, dragPreview] = useDrag({
-    type: 'ESTIMATE_ITEM',
-    item: { id: `item-${index}`, index },
-    collect: (monitor) => ({
-      isDragging: monitor.isDragging(),
-    }),
+  onRemove: (index: number) => void;
+  onMove: (from: number, to: number) => void;
+  onUpdate: (index: number, value: Partial<Item>) => void;
+}> = ({ item, index, onRemove, onMove, onUpdate }) => {
+  const [{ isDragging }, dragRef, previewRef] = useDrag({
+    type: 'PREVIEW_ITEM',
+    item: { id: `preview-${index}`, index } as DragMeta,
+    collect: monitor => ({ isDragging: monitor.isDragging() })
   });
 
-  const [, drop] = useDrop({
-    accept: 'ESTIMATE_ITEM',
-    hover(dragItem: DragItem, monitor) {
-      if (!monitor.isOver({ shallow: true })) {
-        return;
-      }
-
-      const dragIndex = dragItem.index;
-      const hoverIndex = index;
-
-      if (dragIndex === hoverIndex) {
-        return;
-      }
-
-      moveItem(dragIndex, hoverIndex);
-      dragItem.index = hoverIndex;
-    },
+  const [, dropRef] = useDrop({
+    accept: 'PREVIEW_ITEM',
+    hover(dragItem: DragMeta, monitor) {
+      if (!monitor.isOver({ shallow: true })) return;
+      if (dragItem.index === index) return;
+      onMove(dragItem.index, index);
+      dragItem.index = index;
+    }
   });
 
-  const [editingField, setEditingField] = React.useState<string | null>(null);
-  const [editValues, setEditValues] = React.useState({
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [draftValues, setDraftValues] = useState({
     name: item.name,
     quantity: item.quantity.toString(),
     price: item.price.toString(),
@@ -76,77 +57,67 @@ function DraggableItem({
     note: item.note
   });
 
-  const handleFieldClick = (field: string) => {
-    setEditingField(field);
-  };
-
-  const handleSaveField = (field: keyof typeof editValues) => {
-    let value: any = editValues[field];
-    
+  const commitField = (field: keyof typeof draftValues) => {
+    let value: any = draftValues[field];
     if (field === 'quantity' || field === 'price') {
-      const numValue = parseInt(value);
-      if (!isNaN(numValue) && numValue >= 0) {
-        // 수량은 1 이상, 가격은 0 이상 허용
-        if (field === 'quantity' && numValue === 0) {
-          // 수량은 최소 1이어야 함
-          setEditValues(prev => ({
-            ...prev,
-            [field]: item.quantity.toString()
-          }));
-          setEditingField(null);
-          return;
-        }
-        value = numValue;
-      } else {
-        // 유효하지 않은 값인 경우 원래 값으로 복원
-        setEditValues(prev => ({
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric < 0) {
+        setDraftValues(prev => ({
           ...prev,
           [field]: field === 'quantity' ? item.quantity.toString() : item.price.toString()
         }));
         setEditingField(null);
         return;
       }
+      if (field === 'quantity' && numeric === 0) {
+        setDraftValues(prev => ({ ...prev, quantity: item.quantity.toString() }));
+        setEditingField(null);
+        return;
+      }
+      value = numeric;
     }
-
-    onUpdateItem(index, { [field]: value });
+    onUpdate(index, { [field]: value });
     setEditingField(null);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent, field: keyof typeof editValues) => {
-    if (e.key === 'Enter') {
-      handleSaveField(field);
-    } else if (e.key === 'Escape') {
-      setEditValues(prev => ({
-        ...prev,
-        [field]: field === 'quantity' ? item.quantity.toString() : 
-                field === 'price' ? item.price.toString() : 
-                (item as any)[field]
-      }));
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement | HTMLSelectElement>, field: keyof typeof draftValues) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitField(field);
+    } else if (event.key === 'Escape') {
+      setDraftValues({
+        name: item.name,
+        quantity: item.quantity.toString(),
+        price: item.price.toString(),
+        spec: item.spec,
+        note: item.note
+      });
       setEditingField(null);
     }
   };
 
-  const specOptions = ['EA', 'SET', '개', '식', '품', 'm', 'kg', '시간', '일'];
-
-  const renderEditableField = (field: keyof typeof editValues, displayValue: string, className: string = "") => {
+  const renderField = (field: keyof typeof draftValues, display: string, className = '') => {
     const isEditing = editingField === field;
-    
+
     if (isEditing) {
       if (field === 'spec') {
         return (
           <select
-            value={editValues[field]}
-            onChange={(e) => {
-              setEditValues(prev => ({ ...prev, [field]: e.target.value }));
-              onUpdateItem(index, { [field]: e.target.value });
+            value={draftValues.spec}
+            onChange={event => {
+              setDraftValues(prev => ({ ...prev, spec: event.target.value }));
+              onUpdate(index, { spec: event.target.value });
               setEditingField(null);
             }}
             onBlur={() => setEditingField(null)}
+            onKeyDown={event => handleKeyDown(event, field)}
             className={`bg-white border border-blue-400 rounded px-1 py-0.5 text-sm outline-none ${className}`}
             autoFocus
           >
-            {specOptions.map(option => (
-              <option key={option} value={option}>{option}</option>
+            {SPEC_OPTIONS.map(option => (
+              <option key={option} value={option}>
+                {option}
+              </option>
             ))}
           </select>
         );
@@ -155,598 +126,458 @@ function DraggableItem({
       return (
         <input
           type={field === 'quantity' || field === 'price' ? 'number' : 'text'}
-          value={editValues[field]}
-          onChange={(e) => setEditValues(prev => ({ ...prev, [field]: e.target.value }))}
-          onBlur={() => handleSaveField(field)}
-          onKeyDown={(e) => handleKeyDown(e, field)}
+          value={draftValues[field]}
+          onChange={event => setDraftValues(prev => ({ ...prev, [field]: event.target.value }))}
+          onBlur={() => commitField(field)}
+          onKeyDown={event => handleKeyDown(event, field)}
           className={`bg-white border border-blue-400 rounded px-1 py-0.5 text-sm outline-none ${className}`}
           autoFocus
-          min={field === 'quantity' ? '1' : field === 'price' ? '0' : undefined}
+          min={field === 'quantity' ? 1 : field === 'price' ? 0 : undefined}
         />
       );
     }
 
     return (
-      <span 
+      <span
         className={`cursor-pointer hover:bg-blue-50 px-1 py-0.5 rounded ${className}`}
-        onClick={() => handleFieldClick(field)}
+        onClick={() => setEditingField(field)}
         title="클릭하여 수정"
       >
-        {displayValue}
+        {display}
       </span>
     );
   };
 
   return (
     <div
-      ref={(node) => dragPreview(drop(node))}
-      className={`flex items-center justify-between p-3 bg-gray-50 rounded ${
-        isDragging ? 'opacity-50' : 'opacity-100'
-      }`}
+      ref={node => previewRef(dropRef(node))}
+      className={`flex items-center justify-between p-3 bg-gray-50 rounded ${isDragging ? 'opacity-50' : ''}`}
     >
-      <div
-        ref={drag}
-        className="cursor-move text-gray-400 hover:text-gray-600 p-1 mr-2"
-      >
+      <div ref={dragRef} className="cursor-move text-gray-400 hover:text-gray-600 p-1 mr-2">
         <GripVertical className="h-4 w-4" />
       </div>
       <div className="flex-1 grid grid-cols-5 gap-4 text-sm">
-        {renderEditableField('name', item.name, 'font-medium')}
+        {renderField('name', item.name, 'font-medium')}
         <div className="flex gap-1">
-          {renderEditableField('quantity', item.quantity.toString())}
-          {renderEditableField('spec', item.spec || 'EA')}
+          {renderField('quantity', item.quantity.toString())}
+          {renderField('spec', item.spec || 'EA')}
         </div>
-        {renderEditableField('price', `${item.price.toLocaleString()}원`)}
-        <span className="text-gray-600">{((item.quantity || 1) * item.price).toLocaleString()}원</span>
-        {renderEditableField('note', item.note || '-', 'text-gray-600')}
+        {renderField('price', `${item.price.toLocaleString()}원`)}
+        <span className="text-gray-600">{(item.quantity * item.price).toLocaleString()}원</span>
+        {renderField('note', item.note || '-', 'text-gray-600')}
       </div>
-      <Button
-        size="sm"
-        variant="outline"
-        className="ml-2 text-red-500 hover:text-red-700"
-        onClick={() => onRemoveItem(index)}
-      >
+      <Button size="sm" variant="outline" className="ml-2 text-red-500 hover:text-red-700" onClick={() => onRemove(index)}>
         <Trash2 className="h-4 w-4" />
       </Button>
     </div>
   );
-}
+};
 
-export function EstimatePreview({ estimateData, onRemoveItem, onMoveItem, onUpdateItem, accessToken, user, currentEstimateId, onEstimateSaved }: EstimatePreviewProps) {
-  const documentRef = useRef<HTMLDivElement>(null);
-  const [isCapturing, setIsCapturing] = React.useState(false);
-  const [isSaving, setIsSaving] = React.useState(false);
-
-  // 한국어 숫자 변환
-  const numberToKorean = (num: number): string => {
-    if (num === 0) return '영원정';
-    
-    const units = ['', '만', '억', '조', '경'];
-    const digits = ['영', '일', '이', '삼', '사', '오', '육', '칠', '팔', '구'];
-    
-    let result = '';
-    let unitIndex = 0;
-    
-    while (num > 0) {
-      const part = num % 10000;
-      if (part > 0) {
-        let partStr = '';
-        
-        const thousands = Math.floor(part / 1000);
-        const hundreds = Math.floor((part % 1000) / 100);
-        const tens = Math.floor((part % 100) / 10);
-        const ones = part % 10;
-        
-        if (thousands > 0) {
-          if (thousands === 1) {
-            partStr += '천';
-          } else {
-            partStr += digits[thousands] + '천';
-          }
-        }
-        if (hundreds > 0) {
-          if (hundreds === 1) {
-            partStr += '백';
-          } else {
-            partStr += digits[hundreds] + '백';
-          }
-        }
-        if (tens > 0) {
-          if (tens === 1) {
-            partStr += '십';
-          } else {
-            partStr += digits[tens] + '십';
-          }
-        }
-        if (ones > 0) {
-          partStr += digits[ones];
-        }
-        
-        result = partStr + units[unitIndex] + result;
-      }
-      
-      num = Math.floor(num / 10000);
-      unitIndex++;
-    }
-    
-    return result + '원정';
-  };
-
-  // 합계 계산
-  const calculateTotals = () => {
+const useTotals = (items: Item[], taxOption: 'including' | 'excluding') =>
+  useMemo(() => {
     let subtotal = 0;
-    
-    estimateData.items.forEach(item => {
-      if (estimateData.taxOption === 'including') {
+
+    items.forEach(item => {
+      if (taxOption === 'including') {
         const unitPrice = Math.floor(item.price / 1.1);
         subtotal += unitPrice * item.quantity;
       } else {
         subtotal += item.price * item.quantity;
       }
     });
-    
+
     const taxAmount = Math.floor(subtotal * 0.1);
     const total = subtotal + taxAmount;
-    
+
     return { subtotal, taxAmount, total };
-  };
+  }, [items, taxOption]);
 
-  const { subtotal, taxAmount, total } = calculateTotals();
+const formatKoreanCurrency = (value: number) => {
+  if (value === 0) return '영원정';
 
-  const captureAndCopyImage = async () => {
-    if (isCapturing) return;
-    
-    try {
-      setIsCapturing(true);
-      
-      // 1단계: 브라우저 지원 확인
-      if (!navigator.clipboard || !ClipboardItem) {
-        throw new Error('이 브라우저는 클립보드 복사를 지원하지 않습니다.\n\n지원 브라우저:\n• Chrome 76+\n• Edge 79+\n• Safari 13.1+\n• Firefox 87+');
+  const units = ['', '만', '억', '조', '경'];
+  const digits = ['영', '일', '이', '삼', '사', '오', '육', '칠', '팔', '구'];
+
+  let amount = value;
+  let result = '';
+  let unitIndex = 0;
+
+  while (amount > 0) {
+    const part = amount % 10000;
+    if (part > 0) {
+      let partStr = '';
+      const thousands = Math.floor(part / 1000);
+      const hundreds = Math.floor((part % 1000) / 100);
+      const tens = Math.floor((part % 100) / 10);
+      const ones = part % 10;
+
+      if (thousands > 0) {
+        partStr += (thousands === 1 ? '' : digits[thousands]) + '천';
+      }
+      if (hundreds > 0) {
+        partStr += (hundreds === 1 ? '' : digits[hundreds]) + '백';
+      }
+      if (tens > 0) {
+        partStr += (tens === 1 ? '' : digits[tens]) + '십';
+      }
+      if (ones > 0) {
+        partStr += digits[ones];
       }
 
-      // 2단계: 클립보드 권한 확인 및 요청
-      try {
-        // Permissions API로 권한 상태 확인
-        if (navigator.permissions && navigator.permissions.query) {
-          const permissionStatus = await navigator.permissions.query({ 
-            name: 'clipboard-write' as PermissionName 
-          });
-          
-          if (permissionStatus.state === 'denied') {
-            throw new Error('클립보드 권한이 거부되었습니다.\n\n해결방법:\n1. 브라우저 주소창 왼쪽의 자물쇠 아이콘 클릭\n2. "클립보드" 권한을 "허용"으로 변경\n3. 페이지 새로고침 후 다시 시도');
-          }
-        }
-      } catch (permError) {
-        // 권한 API를 지원하지 않는 브라우저는 그냥 진행
-        console.log('Permissions API not supported, proceeding anyway');
-      }
-
-      toast('📸 견적서 이미지를 캡쳐하고 있습니다...', { duration: 1000 });
-      
-      // 3단계: 이미지 캡쳐
-      const { toPng } = await import('html-to-image');
-      
-      const element = documentRef.current;
-      if (!element) {
-        throw new Error('이미지 캡쳐할 요소를 찾을 수 없습니다.');
-      }
-
-      // 화면 그대로 캡쳐
-      const dataUrl = await toPng(element, {
-        quality: 1.0,
-        pixelRatio: 3, // 고해상도
-        backgroundColor: '#ffffff',
-        cacheBust: true,
-        style: {
-          margin: '0',
-          padding: '0'
-        }
-      });
-
-      // 4단계: Data URL을 Blob으로 변환
-      const response = await fetch(dataUrl);
-      const blob = await response.blob();
-
-      if (blob.size === 0) {
-        throw new Error('이미지 생성에 실패했습니다. 다시 시도해주세요.');
-      }
-
-      // 5단계: 클립보드에 복사 (사용자 제스처 컨텍스트 내에서 실행)
-      const item = new ClipboardItem({ 'image/png': blob });
-      await navigator.clipboard.write([item]);
-      
-      // 성공!
-      toast.success(`✅ 견적서 이미지가 클립보드에 복사되었습니다!\n\n📋 이제 다른 곳에 붙여넣기 할 수 있습니다:\n• Windows: Ctrl + V\n• Mac: ⌘ + V`, {
-        duration: 4000
-      });
-
-    } catch (error: any) {
-      console.error('이미지 캡쳐 오류:', error);
-      
-      // 에러 메시지 개선
-      let errorMessage = '이미지 캡쳐에 실패했습니다.';
-      let errorDetails = '';
-      
-      if (error.message.includes('브라우저') || error.message.includes('지원')) {
-        errorMessage = error.message;
-      } else if (error.message.includes('클립보드 권한')) {
-        errorMessage = error.message;
-      } else if (error.name === 'NotAllowedError') {
-        errorMessage = '❌ 클립보드 접근 권한이 필요합니다';
-        errorDetails = '\n\n해결방법:\n1. 브라우저 주소창의 자물쇠 🔒 아이콘 클릭\n2. "사이트 설정" 선택\n3. "클립보드" 권한을 "허용"으로 변경\n4. 페이지를 새로고침하고 다시 시도';
-      } else if (error.name === 'SecurityError') {
-        errorMessage = '❌ 보안 오류';
-        errorDetails = '\n\nHTTPS 연결에서만 클립보드 복사가 가능합니다.';
-      } else if (error.message) {
-        errorMessage = error.message;
-      }
-      
-      toast.error(errorMessage + errorDetails, {
-        duration: 8000
-      });
-    } finally {
-      setIsCapturing(false);
+      result = partStr + units[unitIndex] + result;
     }
-  };
 
-  const saveEstimate = async () => {
+    amount = Math.floor(amount / 10000);
+    unitIndex++;
+  }
+
+  return `${result}원정`;
+};
+
+const formatDate = (value: string) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일`;
+};
+
+const formatDateRange = (start: string, end: string, legacy: string) => {
+  const startDate = formatDate(start);
+  const endDate = formatDate(end);
+  const fallback = formatDate(legacy);
+
+  if (startDate && endDate) return `${startDate} ~ ${endDate}`;
+  if (startDate) return `${startDate} ~`;
+  if (endDate) return `~ ${endDate}`;
+  return fallback;
+};
+
+export const EstimatePreview: React.FC<EstimatePreviewProps> = ({ accessToken, user, currentEstimateId, onEstimateSaved }) => {
+  const { estimate, moveItem, removeItem, updateItem } = useEstimate();
+  const documentRef = useRef<HTMLDivElement>(null);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const totals = useTotals(estimate.items, estimate.taxOption);
+  const grandTotalText = useMemo(() => formatKoreanCurrency(totals.total), [totals.total]);
+
+  const handleSave = async () => {
     if (!accessToken || !user) {
       toast.error('견적서를 저장하려면 로그인이 필요합니다.');
       return;
     }
 
-    if (!estimateData.estimateNumber || (!estimateData.client.name && !estimateData.clientName)) {
+    if (!estimate.estimateNumber || !estimate.client.name) {
       toast.error('견적번호와 고객사명을 입력해주세요.');
       return;
     }
 
-    if (estimateData.items.length === 0) {
+    if (estimate.items.length === 0) {
       toast.error('최소 하나 이상의 품목을 추가해주세요.');
       return;
     }
 
     setIsSaving(true);
     try {
-      // 기존 견적서를 불러온 경우 업데이트, 그렇지 않으면 새로 생성
-      const isUpdate = currentEstimateId !== null;
-      const url = isUpdate
+      const isUpdate = Boolean(currentEstimateId);
+      const endpoint = isUpdate
         ? `https://${projectId}.supabase.co/functions/v1/make-server-f05748ee/estimates/${currentEstimateId}`
         : `https://${projectId}.supabase.co/functions/v1/make-server-f05748ee/estimates`;
-      
-      const response = await fetch(url, {
+
+      const response = await fetch(endpoint, {
         method: isUpdate ? 'PUT' : 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
+          Authorization: `Bearer ${accessToken}`
         },
-        body: JSON.stringify(estimateData)
+        body: JSON.stringify(estimate)
       });
 
       const result = await response.json();
-
       if (!response.ok) {
         throw new Error(result.error || '견적서 저장에 실패했습니다.');
       }
 
-      // 새로 생성된 경우 ID 저장
       if (!isUpdate && result.estimate?.id) {
         onEstimateSaved(result.estimate.id);
       }
 
       toast.success(isUpdate ? '견적서가 업데이트되었습니다.' : '견적서가 저장되었습니다.');
     } catch (error: any) {
-      console.error('Save estimate error:', error);
+      console.error('Save estimate error', error);
       toast.error(error.message || '견적서 저장 중 오류가 발생했습니다.');
     } finally {
       setIsSaving(false);
     }
   };
 
-  const moveItem = useCallback((dragIndex: number, hoverIndex: number) => {
-    onMoveItem(dragIndex, hoverIndex);
-  }, [onMoveItem]);
+  const handleCapture = async () => {
+    if (isCapturing) return;
 
-  // Format estimate date
-  const formatDate = (dateString: string) => {
-    if (!dateString) return '';
-    const date = new Date(dateString);
-    return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일`;
-  };
+    try {
+      setIsCapturing(true);
 
-  // Format construction date range
-  const formatConstructionDateRange = () => {
-    const startDate = formatDate(estimateData.constructionStartDate);
-    const endDate = formatDate(estimateData.constructionEndDate);
-    const legacyDate = formatDate(estimateData.constructionDate);
-    
-    if (startDate && endDate) {
-      return `${startDate} ~ ${endDate}`;
-    } else if (startDate) {
-      return `${startDate} ~`;
-    } else if (endDate) {
-      return `~ ${endDate}`;
-    } else if (legacyDate) {
-      return legacyDate;
+      if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+        throw new Error('이 브라우저는 클립보드 복사를 지원하지 않습니다.');
+      }
+
+      if (navigator.permissions?.query) {
+        const permission = await navigator.permissions.query({ name: 'clipboard-write' as PermissionName });
+        if (permission.state === 'denied') {
+          throw new Error('클립보드 권한이 거부되었습니다. 브라우저 설정에서 허용으로 변경해주세요.');
+        }
+      }
+
+      toast('📸 견적서 이미지를 캡쳐하고 있습니다...', { duration: 1000 });
+
+      const { toPng } = await import('html-to-image');
+      const element = documentRef.current;
+      if (!element) {
+        throw new Error('이미지 캡쳐할 요소를 찾을 수 없습니다.');
+      }
+
+      const dataUrl = await toPng(element, {
+        quality: 1,
+        pixelRatio: 3,
+        backgroundColor: '#ffffff',
+        cacheBust: true,
+        style: { margin: '0', padding: '0' }
+      });
+
+      const response = await fetch(dataUrl);
+      const blob = await response.blob();
+
+      if (!blob || blob.size === 0) {
+        throw new Error('이미지 생성에 실패했습니다. 다시 시도해주세요.');
+      }
+
+      const clipboardItem = new ClipboardItem({ 'image/png': blob });
+      await navigator.clipboard.write([clipboardItem]);
+
+      toast.success('견적서 이미지가 클립보드에 복사되었습니다. 붙여넣기(Ctrl+V 또는 ⌘+V)로 공유하세요.');
+    } catch (error: any) {
+      console.error('Capture error', error);
+      toast.error(error.message || '이미지 캡쳐 중 오류가 발생했습니다.');
+    } finally {
+      setIsCapturing(false);
     }
-    return '';
   };
 
-  const currentDate = formatDate(estimateData.estimateDate);
-  const constructionDateFormatted = formatConstructionDateRange();
+  const handleMove = useCallback((from: number, to: number) => moveItem(from, to), [moveItem]);
+  const handleRemove = useCallback((index: number) => removeItem(index), [removeItem]);
+  const handleUpdate = useCallback((index: number, value: Partial<Item>) => updateItem(index, value), [updateItem]);
+
+  const constructionDate = useMemo(
+    () => formatDateRange(estimate.constructionStartDate, estimate.constructionEndDate, estimate.constructionDate),
+    [estimate.constructionStartDate, estimate.constructionEndDate, estimate.constructionDate]
+  );
+
+  const formattedEstimateDate = useMemo(() => formatDate(estimate.estimateDate), [estimate.estimateDate]);
 
   return (
     <DndProvider backend={HTML5Backend}>
       <div className="space-y-4">
-      <Card className="w-full">
-        <CardHeader className="pb-3">
-          <CardTitle>📋 견적서 미리보기</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          {/* A4 크기 고정 컨테이너 */}
-          <div className="w-full bg-gray-100 p-4 rounded-lg">
-            <div 
-              ref={documentRef} 
-              className="bg-white mx-auto shadow-lg"
-              style={{
-                width: '794px',
-                minHeight: estimateData.items.length <= 8 ? '1123px' : 'auto',
-                maxWidth: '100%',
-                fontSize: '12px',
-                lineHeight: '1.1',
-                fontFamily: 'Arial, sans-serif'
-              }}
-            >
-              <div className="p-6">
-                {/* Header */}
-                <div className="flex justify-between items-start mb-6">
-                  <div className="flex items-center">
-                    <span className="text-sm mr-2">No.</span>
-                    <span className="text-sm">{estimateData.estimateNumber}</span>
-                  </div>
-                  {estimateData.supplier.logo && (
-                    <img 
-                      src={estimateData.supplier.logo} 
-                      alt="Company Logo" 
-                      className="max-w-16 max-h-16 object-contain"
-                    />
-                  )}
-                </div>
-                
-                {/* Title */}
-                <div className="text-center mb-8">
-                  <h1 className="text-4xl font-medium tracking-wider">견 적 서</h1>
-                </div>
-
-                {/* Client and Supplier Info */}
-                <div className="grid grid-cols-2 gap-8 mb-8">
-                  {/* Left: Client Info */}
-                  <div>
-                    <div className="mb-4 text-sm">{currentDate}</div>
-                    <div className="border border-black p-4 mb-4">
-                      <div className="mb-3 text-base">
-                        <strong>{estimateData.client.name || estimateData.clientName}</strong> 귀하
-                      </div>
-                      <div className="space-y-1 text-sm">
-                        <div>TEL: {estimateData.client.phone || estimateData.clientPhone}</div>
-                        <div>E-mail: {estimateData.client.email || estimateData.clientEmail}</div>
-                        {estimateData.client.address && <div>주소: {estimateData.client.address}</div>}
-                      </div>
+        <Card className="w-full">
+          <CardHeader className="pb-3">
+            <CardTitle>📋 견적서 미리보기</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="w-full bg-gray-100 p-4 rounded-lg">
+              <div
+                ref={documentRef}
+                className="bg-white mx-auto shadow-lg"
+                style={{
+                  width: '794px',
+                  minHeight: estimate.items.length <= 8 ? '1123px' : 'auto',
+                  maxWidth: '100%',
+                  fontSize: '12px',
+                  lineHeight: '1.1',
+                  fontFamily: 'Arial, sans-serif'
+                }}
+              >
+                <div className="p-6">
+                  <div className="flex justify-between items-start mb-6">
+                    <div className="flex items-center">
+                      <span className="text-sm mr-2">No.</span>
+                      <span className="text-sm">{estimate.estimateNumber}</span>
                     </div>
-                    <div className="text-sm">
-                      {estimateData.supplier.companyName}을(를) 이용해주셔서 감사합니다.
-                    </div>
-                    {constructionDateFormatted && (
-                      <div className="text-sm mt-2">
-                        <strong>예상 공사일:</strong> {constructionDateFormatted}
-                      </div>
+                    {estimate.supplier.logo && (
+                      <img src={estimate.supplier.logo} alt="Company Logo" className="max-w-16 max-h-16 object-contain" />
                     )}
                   </div>
 
-                  {/* Right: Supplier Info */}
-                  <div>
-                    <table className="w-full border-collapse border border-black text-sm">
+                  <div className="text-center mb-8">
+                    <h1 className="text-4xl font-medium tracking-wider">견 적 서</h1>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-8 mb-8">
+                    <div className="space-y-2">
+                      <div className="text-sm">{formattedEstimateDate}</div>
+                      <div className="text-sm">
+                        {estimate.client.name}
+                        {estimate.client.phone && <span className="ml-2">Tel. {estimate.client.phone}</span>}
+                      </div>
+                      {estimate.client.email && <div className="text-sm">E-mail: {estimate.client.email}</div>}
+                      {estimate.client.address && <div className="text-sm">Address: {estimate.client.address}</div>}
+                      {constructionDate && <div className="text-sm">공사 기간: {constructionDate}</div>}
+                    </div>
+
+                    <div className="text-right space-y-1 text-sm">
+                      <div className="font-semibold text-lg">{estimate.supplier.companyName}</div>
+                      <div>대표자 {estimate.supplier.name}</div>
+                      <div>사업자등록번호 {estimate.supplier.businessNumber}</div>
+                      {estimate.supplier.address && <div>{estimate.supplier.address}</div>}
+                      {estimate.supplier.phone && <div>TEL. {estimate.supplier.phone}</div>}
+                      {estimate.supplier.fax && <div>FAX. {estimate.supplier.fax}</div>}
+                      {estimate.supplier.companyEmail && <div>E-mail. {estimate.supplier.companyEmail}</div>}
+                    </div>
+                  </div>
+
+                  <div className="mb-6">
+                    <div className="text-lg mb-2">귀사의 무궁한 발전을 기원합니다.</div>
+                    <div className="text-sm">아래와 같이 견적드립니다.</div>
+                  </div>
+
+                  <Table className="border border-black text-sm">
+                    <TableHeader>
+                      <TableRow className="bg-gray-100">
+                        <TableHead className="border border-black text-center">No.</TableHead>
+                        <TableHead className="border border-black text-center">품명</TableHead>
+                        <TableHead className="border border-black text-center">규격</TableHead>
+                        <TableHead className="border border-black text-center">수량</TableHead>
+                        <TableHead className="border border-black text-center">단가</TableHead>
+                        <TableHead className="border border-black text-center">공급가</TableHead>
+                        <TableHead className="border border-black text-center">부가세</TableHead>
+                        <TableHead className="border border-black text-center">비고</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {estimate.items.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={8} className="border border-black text-center py-8 text-gray-500">
+                            품목을 추가해주세요.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      {estimate.items.map((item, idx) => {
+                        let itemSubtotal = item.quantity * item.price;
+                        let itemTax = Math.floor(itemSubtotal * 0.1);
+                        if (estimate.taxOption === 'including') {
+                          itemSubtotal = Math.floor(item.price / 1.1) * item.quantity;
+                          itemTax = Math.floor(itemSubtotal * 0.1);
+                        }
+
+                        return (
+                          <TableRow key={`${item.name}-${idx}`}>
+                            <TableCell className="border border-black text-center">{idx + 1}</TableCell>
+                            <TableCell className="border border-black">{item.name}</TableCell>
+                            <TableCell className="border border-black text-center">{item.spec || 'EA'}</TableCell>
+                            <TableCell className="border border-black text-center">{item.quantity}</TableCell>
+                            <TableCell className="border border-black text-right">{item.price.toLocaleString()}</TableCell>
+                            <TableCell className="border border-black text-right">{itemSubtotal.toLocaleString()}</TableCell>
+                            <TableCell className="border border-black text-right">{itemTax.toLocaleString()}</TableCell>
+                            <TableCell className="border border-black text-center">{item.note || ''}</TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+
+                  <div className="flex justify-end mb-4">
+                    <table className="border-collapse border border-black text-sm">
                       <tbody>
                         <tr>
-                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">사업자등록번호</td>
-                          <td className="border border-black p-2" colSpan={3}>{estimateData.supplier.businessNumber}</td>
+                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">공급가액</td>
+                          <td className="border border-black p-2 text-right">{totals.subtotal.toLocaleString()} 원</td>
                         </tr>
                         <tr>
-                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">상호</td>
-                          <td className="border border-black p-2" colSpan={3}>{estimateData.supplier.companyName}</td>
+                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">부가세</td>
+                          <td className="border border-black p-2 text-right">{totals.taxAmount.toLocaleString()} 원</td>
                         </tr>
                         <tr>
-                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">주소</td>
-                          <td className="border border-black p-2" colSpan={3}>{estimateData.supplier.address}</td>
-                        </tr>
-                        <tr>
-                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">업태</td>
-                          <td className="border border-black p-2">{estimateData.supplier.businessType}</td>
-                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">종목</td>
-                          <td className="border border-black p-2">{estimateData.supplier.businessItem}</td>
-                        </tr>
-                        <tr>
-                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">TEL</td>
-                          <td className="border border-black p-2">{estimateData.supplier.phone}</td>
-                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">FAX</td>
-                          <td className="border border-black p-2">{estimateData.supplier.fax}</td>
-                        </tr>
-                        <tr>
-                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">E-mail</td>
-                          <td className="border border-black p-2" colSpan={3}>{estimateData.supplier.companyEmail}</td>
+                          <td className="border border-black bg-gray-100 p-2 text-center font-medium">부가세 포함가</td>
+                          <td className="border border-black p-2 text-right">{totals.total.toLocaleString()} 원</td>
                         </tr>
                       </tbody>
                     </table>
                   </div>
-                </div>
 
-                {/* Total Amount Highlight Box */}
-                <div className="mt-8 mb-4">
-                  <div className="w-full border-2 border-black p-4 bg-gray-50">
-                    <div className="flex items-center justify-between">
-                      <div className="text-center flex-1">
-                        <div className="text-base font-medium mb-2">총 견적금액:</div>
-                        <div className="text-lg font-bold mb-3">
-                          {numberToKorean(total)} <span className="text-red-600">(￦ {total.toLocaleString()})</span>
-                        </div>
-                        {estimateData.supplier.accountNumber && (
-                          <div className="text-sm text-gray-600">
-                            <strong>계좌번호:</strong> {estimateData.supplier.accountNumber}
-                          </div>
-                        )}
-                      </div>
-                      <div className="text-sm">
+                  <div className="mb-4 text-lg font-medium text-right">합계금액(₩) {totals.total.toLocaleString()} 원</div>
+                  <div className="mb-8 text-right text-sm">({grandTotalText})</div>
 
+                  <div className="mt-8">
+                    <div className="font-medium mb-2">※ 특이 및 특이사항</div>
+                    <div className="text-sm whitespace-pre-line">{estimate.footerNotes}</div>
+                  </div>
+
+                  <div className="mt-8 pt-4 border-t border-gray-300">
+                    <div className="text-center text-sm">
+                      <div className="font-medium mb-1">{estimate.businessFields}</div>
+                      <div>
+                        E-mail : {estimate.supplier.companyEmail}
+                        {estimate.supplier.homepage && <span> / {estimate.supplier.homepage}</span>}
                       </div>
+                      {estimate.supplier.address && <div>{estimate.supplier.address}</div>}
                     </div>
                   </div>
                 </div>
-
-                {/* Items Table */}
-                <table className="w-full border-collapse border border-black text-sm mb-6">
-                  <thead>
-                    <tr>
-                      <th className="border border-black bg-gray-100 p-2 text-center">번호</th>
-                      <th className="border border-black bg-gray-100 p-2 text-center">품목</th>
-                      <th className="border border-black bg-gray-100 p-2 text-center">규격</th>
-                      <th className="border border-black bg-gray-100 p-2 text-center">수량</th>
-                      <th className="border border-black bg-gray-100 p-2 text-center">단가</th>
-                      <th className="border border-black bg-gray-100 p-2 text-center">금액</th>
-                      <th className="border border-black bg-gray-100 p-2 text-center">부가세</th>
-                      <th className="border border-black bg-gray-100 p-2 text-center">비고</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {estimateData.items.map((item, index) => {
-                      let itemSubtotal, itemTax;
-                      
-                      if (estimateData.taxOption === 'including') {
-                        // 부가세 포함 가격에서 공급가액과 부가세 분리
-                        itemSubtotal = Math.floor((item.quantity * item.price) / 1.1);
-                        itemTax = (item.quantity * item.price) - itemSubtotal;
-                      } else {
-                        // 부가세 별도인 경우
-                        itemSubtotal = item.quantity * item.price;
-                        itemTax = Math.floor(itemSubtotal * 0.1);
-                      }
-                      
-                      return (
-                        <tr key={index}>
-                          <td className="border border-black p-2 text-center">{index + 1}</td>
-                          <td className="border border-black p-2">{item.name}</td>
-                          <td className="border border-black p-2 text-center">{item.spec || 'EA'}</td>
-                          <td className="border border-black p-2 text-center">{item.quantity}</td>
-                          <td className="border border-black p-2 text-right">{item.price.toLocaleString()}</td>
-                          <td className="border border-black p-2 text-right">{itemSubtotal.toLocaleString()}</td>
-                          <td className="border border-black p-2 text-right">{itemTax.toLocaleString()}</td>
-                          <td className="border border-black p-2 text-center">{item.note || ''}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-
-                {/* Breakdown Table - Right aligned */}
-                <div className="flex justify-end mb-4">
-                  <table className="border-collapse border border-black text-sm">
-                    <tbody>
-                      <tr>
-                        <td className="border border-black bg-gray-100 p-2 text-center font-medium">공급가액</td>
-                        <td className="border border-black p-2 text-right">{subtotal.toLocaleString()} 원</td>
-                      </tr>
-                      <tr>
-                        <td className="border border-black bg-gray-100 p-2 text-center font-medium">부가세</td>
-                        <td className="border border-black p-2 text-right">{taxAmount.toLocaleString()} 원</td>
-                      </tr>
-                      <tr>
-                        <td className="border border-black bg-gray-100 p-2 text-center font-medium">부가세 포함가</td>
-                        <td className="border border-black p-2 text-right">{total.toLocaleString()} 원</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Special Notes Section */}
-                <div className="mt-8">
-                  <div className="font-medium mb-2">※ 특이 및 특이사항</div>
-                  <div className="text-sm whitespace-pre-line">
-                    {estimateData.supplier.footerNotes || estimateData.footerNotes}
-                  </div>
-                </div>
-
-                {/* Company Information Footer */}
-                <div className="mt-8 pt-4 border-t border-gray-300">
-                  <div className="text-center text-sm">
-                    <div className="font-medium mb-1">{estimateData.supplier.businessFields}</div>
-                    <div>E-mail : {estimateData.supplier.companyEmail} / {estimateData.supplier.homepage}</div>
-                    <div>{estimateData.supplier.address}</div>
-                  </div>
-                </div>
               </div>
             </div>
-          </div>
 
-          {/* Action Buttons */}
-          <div className="p-4 space-y-3">
-            <div className="flex justify-center gap-4">
-              <Button
-                onClick={saveEstimate}
-                disabled={isSaving}
-                className="flex items-center gap-2"
-              >
-                <Save className="h-4 w-4" />
-                {isSaving ? '저장 중...' : '견적서 저장'}
-              </Button>
-              <Button
-                onClick={captureAndCopyImage}
-                disabled={isCapturing}
-                variant="outline"
-                className="flex items-center gap-2 bg-green-50 hover:bg-green-100 border-green-300"
-                title="클릭하면 견적서가 이미지로 복사됩니다"
-              >
-                <Copy className="h-4 w-4" />
-                {isCapturing ? '이미지 캡쳐 중...' : '📸 이미지 복사'}
-              </Button>
-            </div>
-            <div className="text-center text-xs text-gray-500">
-              💡 이미지 복사 후 이메일, 메신저 등에 붙여넣기(Ctrl+V) 하세요
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Items Management */}
-      <Card>
-        <CardHeader>
-          <CardTitle>📦 품목 관리</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-2">
-            <div className="grid grid-cols-5 gap-4 text-sm font-medium text-gray-600 px-3">
-              <span>품목명</span>
-              <span>수량 / 단위</span>
-              <span>단가</span>
-              <span>금액</span>
-              <span>비고</span>
-            </div>
-            {estimateData.items.map((item, index) => (
-              <DraggableItem
-                key={index}
-                item={item}
-                index={index}
-                onRemoveItem={onRemoveItem}
-                onUpdateItem={onUpdateItem}
-                moveItem={moveItem}
-              />
-            ))}
-            {estimateData.items.length === 0 && (
-              <div className="text-center text-gray-500 py-8">
-                품목을 추가해주세요
+            <div className="p-4 space-y-3">
+              <div className="flex justify-center gap-4">
+                <Button onClick={handleSave} disabled={isSaving} className="flex items-center gap-2">
+                  <Save className="h-4 w-4" />
+                  {isSaving ? '저장 중...' : '견적서 저장'}
+                </Button>
+                <Button
+                  onClick={handleCapture}
+                  disabled={isCapturing}
+                  variant="outline"
+                  className="flex items-center gap-2 bg-green-50 hover:bg-green-100 border-green-300"
+                  title="클릭하면 견적서가 이미지로 복사됩니다"
+                >
+                  <Copy className="h-4 w-4" />
+                  {isCapturing ? '이미지 캡쳐 중...' : '📸 이미지 복사'}
+                </Button>
               </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+              <div className="text-center text-xs text-gray-500">
+                💡 이미지 복사 후 이메일, 메신저 등에 붙여넣기(Ctrl+V 또는 ⌘+V) 하세요
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>📦 품목 관리</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <div className="grid grid-cols-5 gap-4 text-sm font-medium text-gray-600 px-3">
+                <span>품목명</span>
+                <span>수량 / 단위</span>
+                <span>단가</span>
+                <span>금액</span>
+                <span>비고</span>
+              </div>
+              {estimate.items.map((item, index) => (
+                <EditableItemRow
+                  key={`${item.name}-${index}`}
+                  item={item}
+                  index={index}
+                  onRemove={handleRemove}
+                  onMove={handleMove}
+                  onUpdate={handleUpdate}
+                />
+              ))}
+              {estimate.items.length === 0 && (
+                <div className="text-center text-gray-500 py-8">품목을 추가해주세요</div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </DndProvider>
   );
-}
+};

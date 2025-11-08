@@ -12,23 +12,14 @@ interface AuthModalProps {
   onLogin: (user: any, accessToken: string) => void;
 }
 
-export function AuthModal({ onLogin }: AuthModalProps) {
+export const AuthModal: React.FC<AuthModalProps> = ({ onLogin }) => {
   const [open, setOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [signupData, setSignupData] = useState({
-    email: '',
-    password: '',
-    name: ''
-  });
-  const [signinData, setSigninData] = useState({
-    email: '',
-    password: ''
-  });
+  const [signupData, setSignupData] = useState({ email: '', password: '', name: '' });
+  const [signinData, setSigninData] = useState({ email: '', password: '' });
 
-
-
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSignup = async (event: React.FormEvent) => {
+    event.preventDefault();
     if (!signupData.email || !signupData.password || !signupData.name) {
       toast.error('모든 필드를 입력해주세요.');
       return;
@@ -40,30 +31,29 @@ export function AuthModal({ onLogin }: AuthModalProps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${publicAnonKey}`
+          Authorization: `Bearer ${publicAnonKey}`
         },
         body: JSON.stringify(signupData)
       });
 
       const result = await response.json();
-
       if (!response.ok) {
         throw new Error(result.error || '회원가입에 실패했습니다.');
       }
 
       toast.success('회원가입이 완료되었습니다. 로그인해주세요.');
       setSignupData({ email: '', password: '', name: '' });
-
+      setOpen(true);
     } catch (error: any) {
-      console.error('Signup error:', error);
+      console.error('Signup error', error);
       toast.error(error.message || '회원가입 중 오류가 발생했습니다.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleSignin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSignin = async (event: React.FormEvent) => {
+    event.preventDefault();
     if (!signinData.email || !signinData.password) {
       toast.error('이메일과 비밀번호를 입력해주세요.');
       return;
@@ -73,7 +63,7 @@ export function AuthModal({ onLogin }: AuthModalProps) {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
         email: signinData.email,
-        password: signinData.password,
+        password: signinData.password
       });
 
       if (error) {
@@ -86,9 +76,8 @@ export function AuthModal({ onLogin }: AuthModalProps) {
         setSigninData({ email: '', password: '' });
         toast.success('로그인되었습니다.');
       }
-
     } catch (error: any) {
-      console.error('Signin error:', error);
+      console.error('Signin error', error);
       toast.error('로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
     } finally {
       setIsLoading(false);
@@ -98,24 +87,20 @@ export function AuthModal({ onLogin }: AuthModalProps) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button className="bg-white text-blue-600 hover:bg-gray-100">
-          🔑 로그인
-        </Button>
+        <Button className="bg-white text-blue-600 hover:bg-gray-100">🔑 로그인</Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>계정 로그인</DialogTitle>
-          <DialogDescription>
-            기존 계정으로 로그인하거나 새 계정을 만드세요.
-          </DialogDescription>
+          <DialogDescription>기존 계정으로 로그인하거나 새 계정을 만드세요.</DialogDescription>
         </DialogHeader>
-        
+
         <Tabs defaultValue="signin" className="w-full">
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="signin">로그인</TabsTrigger>
             <TabsTrigger value="signup">회원가입</TabsTrigger>
           </TabsList>
-          
+
           <TabsContent value="signin" className="space-y-4">
             <form onSubmit={handleSignin} className="space-y-4">
               <div>
@@ -124,7 +109,7 @@ export function AuthModal({ onLogin }: AuthModalProps) {
                   id="signin-email"
                   type="email"
                   value={signinData.email}
-                  onChange={(e) => setSigninData(prev => ({ ...prev, email: e.target.value }))}
+                  onChange={event => setSigninData(prev => ({ ...prev, email: event.target.value }))}
                   placeholder="example@email.com"
                   required
                 />
@@ -135,7 +120,7 @@ export function AuthModal({ onLogin }: AuthModalProps) {
                   id="signin-password"
                   type="password"
                   value={signinData.password}
-                  onChange={(e) => setSigninData(prev => ({ ...prev, password: e.target.value }))}
+                  onChange={event => setSigninData(prev => ({ ...prev, password: event.target.value }))}
                   placeholder="비밀번호를 입력하세요"
                   required
                 />
@@ -145,16 +130,15 @@ export function AuthModal({ onLogin }: AuthModalProps) {
               </Button>
             </form>
           </TabsContent>
-          
+
           <TabsContent value="signup" className="space-y-4">
             <form onSubmit={handleSignup} className="space-y-4">
               <div>
                 <Label htmlFor="signup-name">이름</Label>
                 <Input
                   id="signup-name"
-                  type="text"
                   value={signupData.name}
-                  onChange={(e) => setSignupData(prev => ({ ...prev, name: e.target.value }))}
+                  onChange={event => setSignupData(prev => ({ ...prev, name: event.target.value }))}
                   placeholder="홍길동"
                   required
                 />
@@ -165,7 +149,7 @@ export function AuthModal({ onLogin }: AuthModalProps) {
                   id="signup-email"
                   type="email"
                   value={signupData.email}
-                  onChange={(e) => setSignupData(prev => ({ ...prev, email: e.target.value }))}
+                  onChange={event => setSignupData(prev => ({ ...prev, email: event.target.value }))}
                   placeholder="example@email.com"
                   required
                 />
@@ -176,7 +160,7 @@ export function AuthModal({ onLogin }: AuthModalProps) {
                   id="signup-password"
                   type="password"
                   value={signupData.password}
-                  onChange={(e) => setSignupData(prev => ({ ...prev, password: e.target.value }))}
+                  onChange={event => setSignupData(prev => ({ ...prev, password: event.target.value }))}
                   placeholder="비밀번호를 입력하세요"
                   required
                 />
@@ -190,4 +174,4 @@ export function AuthModal({ onLogin }: AuthModalProps) {
       </DialogContent>
     </Dialog>
   );
-}
+};
